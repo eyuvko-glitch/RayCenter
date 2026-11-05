@@ -12,8 +12,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
-import android.graphics.RectF
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     @Volatile private var streaming = false
     private var wantsStream = false
     private var selectedMode: com.mikimn.droiduvc.StreamMode? = null
+    private var monochromeEnabled = true
     private val usbPermissionAction = "com.raycenter.app.USB_PERMISSION"
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
@@ -101,7 +102,9 @@ class MainActivity : Activity() {
         root.addView(top)
 
         val frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val videoFrame = FrameLayout(this)
         preview = TextureView(this)
+        applyMonochrome()
         preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
                 if (wantsStream && camera != null) startPreview()
@@ -113,8 +116,22 @@ class MainActivity : Activity() {
                 return true
             }
         }
-        frame.addView(preview, FrameLayout.LayoutParams(-1, -1))
-        frame.addView(CenterGuide(this), FrameLayout.LayoutParams(-1, -1))
+        videoFrame.addView(preview, FrameLayout.LayoutParams(-1, -1))
+        videoFrame.addView(CenterGuide(this), FrameLayout.LayoutParams(-1, -1))
+        frame.addView(videoFrame, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            val fw = frame.width
+            val fh = frame.height
+            if (fw > 0 && fh > 0) {
+                var vw = fw
+                var vh = (vw * 9f / 16f).toInt()
+                if (vh > fh) {
+                    vh = fh
+                    vw = (vh * 16f / 9f).toInt()
+                }
+                videoFrame.layoutParams = FrameLayout.LayoutParams(vw, vh, Gravity.CENTER)
+            }
+        }
         root.addView(frame, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = 8; bottomMargin = 8 })
 
         val buttons = LinearLayout(this).apply { gravity = Gravity.CENTER }
@@ -128,6 +145,14 @@ class MainActivity : Activity() {
         cameraControls.addView(Button(this).apply { text = "Эксп. +"; setOnClickListener { adjustControl(ControlId.EXPOSURE_TIME, 1) } })
         cameraControls.addView(Button(this).apply { text = "Gain −"; setOnClickListener { adjustControl(ControlId.GAIN, -1) } })
         cameraControls.addView(Button(this).apply { text = "Gain +"; setOnClickListener { adjustControl(ControlId.GAIN, 1) } })
+        cameraControls.addView(Button(this).apply {
+            text = "Монохром: ВКЛ"
+            setOnClickListener {
+                monochromeEnabled = !monochromeEnabled
+                applyMonochrome()
+                text = if (monochromeEnabled) "Монохром: ВКЛ" else "Монохром: ВЫКЛ"
+            }
+        })
         root.addView(cameraControls)
         root.addView(TextView(this).apply {
             text = "Сейчас: видеопоток и прицельная сетка. Автопоиск центра сопла и лазерной точки добавим после проверки изображения."
@@ -208,7 +233,6 @@ class MainActivity : Activity() {
                 streaming = true
                 runOnUiThread {
                     preview.surfaceTexture?.setDefaultBufferSize(actual.width, actual.height)
-                    applyPreviewTransform(actual.width, actual.height)
                     status.text = "ВИДЕО • ${actual.width}×${actual.height} • ${actual.fps} fps • ${actual.format}"
                 }
             } catch (e: Exception) {
@@ -220,13 +244,12 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun applyPreviewTransform(videoWidth: Int, videoHeight: Int) {
-        if (videoWidth <= 0 || videoHeight <= 0 || preview.width <= 0 || preview.height <= 0) return
-        val source = RectF(0f, 0f, videoWidth.toFloat(), videoHeight.toFloat())
-        val destination = RectF(0f, 0f, preview.width.toFloat(), preview.height.toFloat())
-        val matrix = Matrix()
-        matrix.setRectToRect(source, destination, Matrix.ScaleToFit.CENTER)
-        preview.setTransform(matrix)
+    private fun applyMonochrome() {
+        val paint = Paint()
+        if (monochromeEnabled) {
+            paint.colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+        }
+        preview.setLayerPaint(paint)
     }
 
     private fun toggleAutoExposure() {
@@ -248,13 +271,21 @@ class MainActivity : Activity() {
     private fun adjustControl(id: ControlId, direction: Int) {
         worker.execute {
             try {
-                val control = camera?.controls?.get(id) ?: error("Камера не поддерживает ${id.name}")
+                val cam = camera ?: error("Сначала подключи камеру")
+                if (id == ControlId.EXPOSURE_TIME || id == ControlId.GAIN) {
+                    val auto = cam.controls.autoExposureMode
+                    if (auto != null && AutoExposureMode.MANUAL in auto.options.orEmpty() && auto.value != AutoExposureMode.MANUAL) {
+                        auto.set(AutoExposureMode.MANUAL)
+                    }
+                }
+                val control = cam.controls[id] ?: error("Камера не поддерживает ${id.name}")
                 val range = control.range ?: error("Для ${id.name} нет диапазона")
                 val current = control.value
                 val step = range.step.coerceAtLeast(1)
                 val next = (current.toLong() + direction.toLong() * step).coerceIn(range.min.toLong(), range.max.toLong()).toInt()
                 control.set(next)
-                runOnUiThread { status.text = "${id.name}: $next (диапазон ${range.min}–${range.max})" }
+                val applied = control.value
+                runOnUiThread { status.text = "${id.name}: $applied (диапазон ${range.min}–${range.max}) • автоэкспозиция отключена" }
             } catch (e: Exception) {
                 runOnUiThread { status.text = "${id.name}: ${e.message ?: "недоступно"}" }
             }
