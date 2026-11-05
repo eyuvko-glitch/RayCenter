@@ -175,8 +175,10 @@ class MainActivity : Activity() {
                 if (modes.isEmpty()) error("Камера не сообщила поддерживаемые видеорежимы")
                 val widescreen = modes.filter { kotlin.math.abs(it.width.toFloat() / it.height - 16f / 9f) < 0.025f }
                 selectedMode = (widescreen.ifEmpty { modes }).maxWithOrNull(
-                    compareBy<com.mikimn.droiduvc.StreamMode> { it.width.toLong() * it.height }
-                        .thenBy { if (it.format == StreamFormat.MJPEG) 1 else 0 })
+                    compareBy<com.mikimn.droiduvc.StreamMode> { it.fps >= 25 }
+                        .thenBy { it.fps }
+                        .thenBy { if (it.format == StreamFormat.MJPEG) 1 else 0 }
+                        .thenBy { it.width.toLong() * it.height })
                 connection = conn
                 camera = opened
                 runOnUiThread {
@@ -194,6 +196,8 @@ class MainActivity : Activity() {
         if (!preview.isAvailable || streaming || !wantsStream) return
         val st = preview.surfaceTexture ?: return
         val cam = camera ?: return
+        val modeForBuffer = selectedMode
+        if (modeForBuffer != null) st.setDefaultBufferSize(modeForBuffer.width, modeForBuffer.height)
         val target = Surface(st)
         surface = target
         status.text = "Запускаю видео..."
@@ -203,6 +207,7 @@ class MainActivity : Activity() {
                 val actual = if (mode != null) cam.start(target, mode) else cam.start(target, 640, 480, 30, StreamFormat.MJPEG)
                 streaming = true
                 runOnUiThread {
+                    preview.surfaceTexture?.setDefaultBufferSize(actual.width, actual.height)
                     applyPreviewTransform(actual.width, actual.height)
                     status.text = "ВИДЕО • ${actual.width}×${actual.height} • ${actual.fps} fps • ${actual.format}"
                 }
