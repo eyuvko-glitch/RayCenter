@@ -51,7 +51,7 @@ class MainActivity : Activity() {
     @Volatile private var streaming = false
     private var wantsStream = false
     private var selectedMode: com.mikimn.droiduvc.StreamMode? = null
-    private var monochromeEnabled = true
+    private var monochromeEnabled = false
     private val usbPermissionAction = "com.raycenter.app.USB_PERMISSION"
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
@@ -146,7 +146,7 @@ class MainActivity : Activity() {
         cameraControls.addView(Button(this).apply { text = "Gain −"; setOnClickListener { adjustControl(ControlId.GAIN, -1) } })
         cameraControls.addView(Button(this).apply { text = "Gain +"; setOnClickListener { adjustControl(ControlId.GAIN, 1) } })
         cameraControls.addView(Button(this).apply {
-            text = "Монохром: ВКЛ"
+            text = "Монохром: ВЫКЛ"
             setOnClickListener {
                 monochromeEnabled = !monochromeEnabled
                 applyMonochrome()
@@ -245,7 +245,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyMonochrome() {
-        val paint = Paint()
+        val paint = Paint().apply { color = Color.WHITE }
         if (monochromeEnabled) {
             paint.colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
         }
