@@ -70,7 +70,7 @@ class MainActivity : Activity() {
 
     private val analysisLoop = object : Runnable {
         override fun run() {
-            if (streaming && preview.isAvailable && !analysisBusy && stage != Stage.LIVE) {
+            if (streaming && preview.isAvailable && !analysisBusy && ((stage == Stage.NOZZLE && nozzleCenter == null) || stage == Stage.LASER)) {
                 val frame = try { preview.bitmap } catch (_: Exception) { null }
                 if (frame != null) {
                     analysisBusy = true
