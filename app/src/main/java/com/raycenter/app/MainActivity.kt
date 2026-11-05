@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.RectF
 import android.graphics.Paint
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -28,6 +30,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.mikimn.droiduvc.AutoExposureMode
+import com.mikimn.droiduvc.ControlId
 import com.mikimn.droiduvc.StreamFormat
 import com.mikimn.droiduvc.UvcCamera
 import com.mikimn.droiduvc.uvcDevices
@@ -46,6 +50,7 @@ class MainActivity : Activity() {
     private var surface: Surface? = null
     @Volatile private var streaming = false
     private var wantsStream = false
+    private var selectedMode: com.mikimn.droiduvc.StreamMode? = null
     private val usbPermissionAction = "com.raycenter.app.USB_PERMISSION"
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
@@ -117,6 +122,13 @@ class MainActivity : Activity() {
         buttons.addView(Button(this).apply { text = "Стоп"; setOnClickListener { wantsStream = false; closeCamera() } })
         buttons.addView(Button(this).apply { text = "Фото"; setOnClickListener { savePhoto() } })
         root.addView(buttons)
+        val cameraControls = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        cameraControls.addView(Button(this).apply { text = "Авто эксп."; setOnClickListener { toggleAutoExposure() } })
+        cameraControls.addView(Button(this).apply { text = "Эксп. −"; setOnClickListener { adjustControl(ControlId.EXPOSURE_TIME, -1) } })
+        cameraControls.addView(Button(this).apply { text = "Эксп. +"; setOnClickListener { adjustControl(ControlId.EXPOSURE_TIME, 1) } })
+        cameraControls.addView(Button(this).apply { text = "Gain −"; setOnClickListener { adjustControl(ControlId.GAIN, -1) } })
+        cameraControls.addView(Button(this).apply { text = "Gain +"; setOnClickListener { adjustControl(ControlId.GAIN, 1) } })
+        root.addView(cameraControls)
         root.addView(TextView(this).apply {
             text = "Сейчас: видеопоток и прицельная сетка. Автопоиск центра сопла и лазерной точки добавим после проверки изображения."
             textSize = 12f
@@ -159,12 +171,16 @@ class MainActivity : Activity() {
                 releaseCameraInternal()
                 val conn = usb.openDevice(device) ?: error("USB openDevice вернул null")
                 val opened = UvcCamera.open(conn.fileDescriptor)
-                val modes = opened.supportedModes()
+                val modes = opened.supportedModes().filter { it.format == StreamFormat.MJPEG || it.format == StreamFormat.YUYV }
                 if (modes.isEmpty()) error("Камера не сообщила поддерживаемые видеорежимы")
+                val widescreen = modes.filter { kotlin.math.abs(it.width.toFloat() / it.height - 16f / 9f) < 0.025f }
+                selectedMode = (widescreen.ifEmpty { modes }).maxWithOrNull(
+                    compareBy<com.mikimn.droiduvc.StreamMode> { it.width.toLong() * it.height }
+                        .thenBy { if (it.format == StreamFormat.MJPEG) 1 else 0 })
                 connection = conn
                 camera = opened
                 runOnUiThread {
-                    status.text = "Камера готова • режимов: ${modes.size}"
+                    status.text = "Камера готова • ${selectedMode?.width}×${selectedMode?.height} • режимов: ${modes.size}"
                     if (wantsStream) startPreview()
                 }
             } catch (e: Exception) {
@@ -183,9 +199,11 @@ class MainActivity : Activity() {
         status.text = "Запускаю видео..."
         worker.execute {
             try {
-                val actual = cam.start(target, 640, 480, 30, StreamFormat.MJPEG)
+                val mode = selectedMode
+                val actual = if (mode != null) cam.start(target, mode) else cam.start(target, 640, 480, 30, StreamFormat.MJPEG)
                 streaming = true
                 runOnUiThread {
+                    applyPreviewTransform(actual.width, actual.height)
                     status.text = "ВИДЕО • ${actual.width}×${actual.height} • ${actual.fps} fps • ${actual.format}"
                 }
             } catch (e: Exception) {
@@ -193,6 +211,47 @@ class MainActivity : Activity() {
                 target.release()
                 surface = null
                 runOnUiThread { status.text = "Ошибка видеопотока: ${e.message ?: e.javaClass.simpleName}" }
+            }
+        }
+    }
+
+    private fun applyPreviewTransform(videoWidth: Int, videoHeight: Int) {
+        if (videoWidth <= 0 || videoHeight <= 0 || preview.width <= 0 || preview.height <= 0) return
+        val source = RectF(0f, 0f, videoWidth.toFloat(), videoHeight.toFloat())
+        val destination = RectF(0f, 0f, preview.width.toFloat(), preview.height.toFloat())
+        val matrix = Matrix()
+        matrix.setRectToRect(source, destination, Matrix.ScaleToFit.CENTER)
+        preview.setTransform(matrix)
+    }
+
+    private fun toggleAutoExposure() {
+        worker.execute {
+            try {
+                val control = camera?.controls?.autoExposureMode ?: error("Камера не поддерживает переключение автоэкспозиции")
+                val options = control.options.orEmpty()
+                val current = control.value
+                val next = if (current == AutoExposureMode.AUTO && AutoExposureMode.MANUAL in options) AutoExposureMode.MANUAL else AutoExposureMode.AUTO
+                if (next !in options) error("Этот режим экспозиции камера не поддерживает")
+                control.set(next)
+                runOnUiThread { status.text = if (next == AutoExposureMode.AUTO) "Автоэкспозиция включена" else "Ручная экспозиция включена" }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "Экспозиция: ${e.message ?: "недоступно"}" }
+            }
+        }
+    }
+
+    private fun adjustControl(id: ControlId, direction: Int) {
+        worker.execute {
+            try {
+                val control = camera?.controls?.get(id) ?: error("Камера не поддерживает ${id.name}")
+                val range = control.range ?: error("Для ${id.name} нет диапазона")
+                val current = control.value
+                val step = range.step.coerceAtLeast(1)
+                val next = (current.toLong() + direction.toLong() * step).coerceIn(range.min.toLong(), range.max.toLong()).toInt()
+                control.set(next)
+                runOnUiThread { status.text = "${id.name}: $next (диапазон ${range.min}–${range.max})" }
+            } catch (e: Exception) {
+                runOnUiThread { status.text = "${id.name}: ${e.message ?: "недоступно"}" }
             }
         }
     }
