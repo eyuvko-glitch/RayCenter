@@ -80,21 +80,24 @@ export default {
       }
 
       const base = `https://api.telegram.org/bot${env.BOT_TOKEN}`;
-      if (photos.length === 0) {
+      // Telegram photo captions are limited to 1024 characters. Long reports
+      // are sent as a normal text message, followed by the photo attachment(s).
+      const caption = reportText.length <= 1024 ? reportText : "";
+      if (photos.length === 0 || !caption) {
         await telegramCall(`${base}/sendMessage`, JSON.stringify({
           chat_id: env.CHAT_ID,
           text: reportText,
         }), { "content-type": "application/json" });
-      } else if (photos.length === 1) {
+      }
+      if (photos.length === 1) {
         const form = new FormData();
         form.set("chat_id", env.CHAT_ID);
-        form.set("caption", reportText);
+        if (caption) form.set("caption", caption);
         form.set("photo", photos[0], photos[0].name || "photo_1.jpg");
         await telegramCall(`${base}/sendPhoto`, form);
-      } else {
-        // Telegram media groups accept 2–10 photos. Put the report text
-        // in the first photo caption instead of sending a separate message.
-        await sendPhotoGroup(base, env.CHAT_ID, photos.slice(0, 10), reportText);
+      } else if (photos.length > 1) {
+        // Telegram media groups accept 2–10 photos.
+        await sendPhotoGroup(base, env.CHAT_ID, photos.slice(0, 10), caption);
         if (photos.length > 10) {
           await sendPhotoGroup(base, env.CHAT_ID, photos.slice(10), "");
         }
