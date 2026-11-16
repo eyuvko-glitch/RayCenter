@@ -61,7 +61,7 @@ private fun TechControlApp() {
     var photos by remember { mutableStateOf(listOf<Uri>()) }
     var showSettings by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в MAX") }
+    var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в Telegram") }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         photos = uris.take(12)
@@ -79,19 +79,19 @@ private fun TechControlApp() {
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (showSettings) {
-                Text("Настройки MAX", style = MaterialTheme.typography.titleLarge)
+                Text("Настройки Telegram", style = MaterialTheme.typography.titleLarge)
                 OutlinedTextField(value = employee, onValueChange = { employee = it }, label = { Text("ФИО сотрудника") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text("Токен MAX-бота") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = chatId, onValueChange = { chatId = it }, label = { Text("ID общей группы MAX") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text("Токен Telegram-бота") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = chatId, onValueChange = { chatId = it }, label = { Text("ID общей группы Telegram") }, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { saveSettings(); status = "Настройки сохранены на этом телефоне" }, modifier = Modifier.fillMaxWidth()) { Text("Сохранить настройки") }
                 OutlinedButton(
                     enabled = token.isNotBlank() && !busy,
                     onClick = {
                         busy = true
-                        status = "Ищу последнее событие MAX… Добавьте бота в группу и отправьте туда сообщение."
+                        status = "Ищу последнее сообщение в группе… Добавьте бота в группу и отправьте туда сообщение."
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
-                                try { MaxApi(context, token.trim(), "").findLatestChatId() }
+                                try { TelegramApi(context, token.trim(), "").findLatestChatId() }
                                 catch (e: Exception) { "Ошибка получения ID: ${e.message ?: "неизвестная ошибка"}" }
                             }
                             if (result.startsWith("CHAT_ID:")) {
@@ -102,8 +102,8 @@ private fun TechControlApp() {
                             busy = false
                         }
                     }, modifier = Modifier.fillMaxWidth()
-                ) { Text("Получить ID группы из MAX") }
-                Text("Токен хранится локально на телефоне. Не пересылайте APK с уже заполненным токеном посторонним.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                ) { Text("Получить ID группы из Telegram") }
+                Text("Токен хранится локально на телефоне. Не передавайте APK с уже заполненным токеном посторонним.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 HorizontalDivider()
             }
 
@@ -147,10 +147,10 @@ private fun TechControlApp() {
                 onClick = {
                     saveSettings()
                     busy = true
-                    status = "Отправка в MAX…"
+                    status = "Отправка в Telegram…"
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            try { MaxApi(context, token.trim(), chatId.trim()).sendReport(employee.trim(), selectedObject, category, equipment.trim(), details.trim(), actionTaken.trim(), priority, photos) }
+                            try { TelegramApi(context, token.trim(), chatId.trim()).sendReport(employee.trim(), selectedObject, category, equipment.trim(), details.trim(), actionTaken.trim(), priority, photos) }
                             catch (e: Exception) { "Ошибка отправки: ${e.message ?: "неизвестная ошибка"}" }
                         }
                         status = result
@@ -160,35 +160,38 @@ private fun TechControlApp() {
                         }
                     }
                 }, modifier = Modifier.fillMaxWidth().height(52.dp)
-            ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Отправить в MAX") }
+            ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Отправить в Telegram") }
             Text(status, style = MaterialTheme.typography.bodyMedium, color = if (status.startsWith("Ошибка")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
-            Text("Перед первым использованием откройте «Настройки», укажите ФИО, токен бота и ID группы MAX.", style = MaterialTheme.typography.bodySmall)
+            Text("Перед первым использованием откройте «Настройки», укажите ФИО, токен бота и ID группы Telegram.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
-private class MaxApi(private val context: Context, private val token: String, private val chatId: String) {
+private class TelegramApi(private val context: Context, private val token: String, private val chatId: String) {
     private val client = OkHttpClient.Builder().connectTimeout(25, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS).build()
-    private val base = "https://platform-api2.max.ru"
+    private val base get() = "https://api.telegram.org/bot$token"
 
     fun findLatestChatId(): String {
-        val request = Request.Builder().url("$base/updates?timeout=0&limit=1000")
-            .header("Authorization", token).get().build()
+        val request = Request.Builder().url("$base/getUpdates?timeout=0&limit=100").get().build()
         return client.newCall(request).execute().use { response ->
             val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IllegalStateException("MAX ${response.code}: ${raw.take(400)}")
+            if (!response.isSuccessful) throw IllegalStateException("Telegram ${response.code}: ${raw.take(400)}")
             val root = JSONObject(raw)
-            val updates = root.optJSONArray("updates") ?: JSONArray()
+            if (!root.optBoolean("ok", false)) throw IllegalStateException(root.optString("description", "Telegram API error"))
+            val updates = root.optJSONArray("result") ?: JSONArray()
             for (i in updates.length() - 1 downTo 0) {
                 val update = updates.optJSONObject(i) ?: continue
-                val direct = update.optString("chat_id", "")
-                if (direct.isNotBlank() && direct != "null") return@use "CHAT_ID:$direct"
                 val message = update.optJSONObject("message")
-                val recipient = message?.optJSONObject("recipient")
-                val nested = recipient?.optString("chat_id", "") ?: ""
-                if (nested.isNotBlank() && nested != "null") return@use "CHAT_ID:$nested"
+                    ?: update.optJSONObject("edited_message")
+                    ?: update.optJSONObject("channel_post")
+                    ?: update.optJSONObject("edited_channel_post")
+                    ?: continue
+                val chat = message.optJSONObject("chat") ?: continue
+                val type = chat.optString("type", "")
+                val id = chat.optString("id", "")
+                if (type != "private" && id.isNotBlank() && id != "null") return@use "CHAT_ID:$id"
             }
-            "MAX не вернул ID группы. Добавьте бота в группу, назначьте администратором, отправьте сообщение в группе и повторите. Если бот уже подписан на webhook, GET /updates недоступен — в таком случае вставьте chat_id вручную."
+            "Telegram не вернул сообщение из группы. Добавьте бота в нужную группу, отправьте там команду или сообщение и повторите. Если у бота установлен webhook, getUpdates недоступен — введите chat_id вручную."
         }
     }
 
@@ -202,49 +205,36 @@ private class MaxApi(private val context: Context, private val token: String, pr
             append("\nОписание:\n$details\n")
             if (measures.isNotBlank()) append("\nДополнительно / принятые меры:\n$measures\n")
         }
-        val attachments = JSONArray()
-        photos.forEach { uri ->
-            val mediaToken = uploadImage(uri)
-            val payload = JSONObject().put("token", mediaToken)
-            attachments.put(JSONObject().put("type", "image").put("payload", payload))
-        }
-        val body = JSONObject().put("text", text)
-        if (attachments.length() > 0) body.put("attachments", attachments)
-        val request = Request.Builder().url("$base/messages?chat_id=$chatId")
-            .header("Authorization", token).header("Content-Type", "application/json")
-            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
-        client.newCall(request).execute().use { response ->
-            val responseText = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IllegalStateException("MAX ${response.code}: ${responseText.take(500)}")
-        }
-        return "Отправлено в MAX. Фото: ${photos.size}."
+        sendText(text)
+        photos.forEachIndexed { index, uri -> uploadPhoto(uri, index + 1) }
+        return "Отправлено в Telegram. Фото: ${photos.size}."
     }
 
-    private fun uploadImage(uri: Uri): String {
-        val getUrl = Request.Builder().url("$base/uploads?type=image").header("Authorization", token)
-            .post(ByteArray(0).toRequestBody(null)).build()
-        val uploadUrl = client.newCall(getUrl).execute().use { response ->
+    private fun sendText(text: String) {
+        val body = JSONObject().put("chat_id", chatId).put("text", text)
+        val request = Request.Builder().url("$base/sendMessage")
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        client.newCall(request).execute().use { response ->
             val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IllegalStateException("MAX upload URL ${response.code}: ${raw.take(300)}")
-            JSONObject(raw).getString("url")
+            if (!response.isSuccessful || !JSONObject(raw).optBoolean("ok", false))
+                throw IllegalStateException("Telegram sendMessage ${response.code}: ${raw.take(500)}")
         }
+    }
+
+    private fun uploadPhoto(uri: Uri, number: Int) {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("Не удалось прочитать фотографию")
+            ?: throw IllegalStateException("Не удалось прочитать фотографию №$number")
         val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-        val uploadBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("data", "photo.${if (mime.contains("png")) "png" else "jpg"}", bytes.toRequestBody(mime.toMediaType())).build()
-        val uploadRequest = Request.Builder().url(uploadUrl).header("Authorization", token).post(uploadBody).build()
-        val uploadedToken = client.newCall(uploadRequest).execute().use { response ->
+        val filename = if (mime.contains("png")) "photo_$number.png" else "photo_$number.jpg"
+        val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("chat_id", chatId)
+            .addFormDataPart("photo", filename, bytes.toRequestBody(mime.toMediaType()))
+            .build()
+        val request = Request.Builder().url("$base/sendPhoto").post(multipart).build()
+        client.newCall(request).execute().use { response ->
             val raw = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IllegalStateException("Загрузка фото ${response.code}: ${raw.take(300)}")
-            val json = JSONObject(raw)
-            when {
-                json.has("photos") -> json.getJSONObject("photos").getJSONObject("photoIds").getString("token")
-                json.has("token") -> json.getString("token")
-                else -> throw IllegalStateException("MAX не вернул токен фотографии: ${raw.take(300)}")
-            }
+            if (!response.isSuccessful || !JSONObject(raw).optBoolean("ok", false))
+                throw IllegalStateException("Telegram sendPhoto №$number ${response.code}: ${raw.take(500)}")
         }
-        Thread.sleep(1200)
-        return uploadedToken
     }
 }
