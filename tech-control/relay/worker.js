@@ -41,6 +41,10 @@ export default {
       const incoming = await request.formData();
       const reportText = String(incoming.get("report_text") || "").trim();
       if (!reportText) return json({ ok: false, error: "Пустой отчёт" }, 400);
+      const photos = incoming.getAll("photo").filter((item) => item && typeof item !== "string");
+      if (photos.length > 12) return json({ ok: false, error: "Разрешено не более 12 фотографий" }, 400);
+      const oversized = photos.findIndex((photo) => photo.size > 10 * 1024 * 1024);
+      if (oversized >= 0) return json({ ok: false, error: `Фото №${oversized + 1} больше 10 МБ` }, 413);
 
       const telegramBase = `https://api.telegram.org/bot${env.BOT_TOKEN}`;
       const messageResponse = await fetch(`${telegramBase}/sendMessage`, {
@@ -56,14 +60,8 @@ export default {
         }, 502);
       }
 
-      const photos = incoming.getAll("photo").filter((item) => item && typeof item !== "string");
-      if (photos.length > 12) return json({ ok: false, error: "Разрешено не более 12 фотографий" }, 400);
-
       for (let index = 0; index < photos.length; index++) {
         const photo = photos[index];
-        if (photo.size > 10 * 1024 * 1024) {
-          return json({ ok: false, error: `Фото №${index + 1} больше 10 МБ; отчёт уже отправлен, это фото не отправлено` }, 413);
-        }
         const outgoing = new FormData();
         outgoing.set("chat_id", env.CHAT_ID);
         outgoing.set("photo", photo, photo.name || `photo_${index + 1}.jpg`);
