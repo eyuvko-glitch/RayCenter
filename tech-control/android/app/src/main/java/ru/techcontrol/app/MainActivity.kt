@@ -1,17 +1,28 @@
 package ru.techcontrol.app
 
+import android.Manifest
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.net.Uri
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationCompat
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -28,6 +39,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -40,6 +52,7 @@ private val categories = listOf(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ReminderNotifications.createChannel(this)
         setContent { MaterialTheme { TechControlApp() } }
     }
 }
@@ -62,6 +75,15 @@ private fun TechControlApp() {
     var showSettings by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в Telegram") }
+    var reminderEnabled by remember { mutableStateOf(prefs.getBoolean("reminder_enabled", true)) }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted && reminderEnabled) ReminderScheduler.schedule(context)
+    }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else if (reminderEnabled) ReminderScheduler.schedule(context)
+    }
     val scope = rememberCoroutineScope()
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         photos = uris.take(12)
@@ -80,6 +102,17 @@ private fun TechControlApp() {
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (showSettings) {
                 Text("Настройки Telegram", style = MaterialTheme.typography.titleLarge)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Напоминать об отчёте в 17:00")
+                        Text("Ежедневное уведомление в конце смены", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(checked = reminderEnabled, onCheckedChange = { enabled ->
+                        reminderEnabled = enabled
+                        prefs.edit().putBoolean("reminder_enabled", enabled).apply()
+                        if (enabled) ReminderScheduler.schedule(context) else ReminderScheduler.cancel(context)
+                    })
+                }
                 OutlinedTextField(value = employee, onValueChange = { employee = it }, label = { Text("ФИО сотрудника") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text("Токен Telegram-бота") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = chatId, onValueChange = { chatId = it }, label = { Text("ID общей группы Telegram") }, modifier = Modifier.fillMaxWidth())
@@ -236,5 +269,84 @@ private class TelegramApi(private val context: Context, private val token: Strin
             if (!response.isSuccessful || !JSONObject(raw).optBoolean("ok", false))
                 throw IllegalStateException("Telegram sendPhoto №$number ${response.code}: ${raw.take(500)}")
         }
+    }
+}
+
+
+private object ReminderScheduler {
+    private const val REQUEST_CODE = 1700
+
+    fun schedule(context: Context) {
+        val prefs = context.getSharedPreferences("tech_control", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("reminder_enabled", true)) return
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, ShiftReminderReceiver::class.java)
+        val pending = PendingIntent.getBroadcast(
+            context, REQUEST_CODE, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val next = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 17)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
+        }
+        alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.timeInMillis, pending)
+    }
+
+    fun cancel(context: Context) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, ShiftReminderReceiver::class.java)
+        val pending = PendingIntent.getBroadcast(
+            context, REQUEST_CODE, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pending)
+        pending.cancel()
+    }
+}
+
+private class ShiftReminderReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        val prefs = context.getSharedPreferences("tech_control", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("reminder_enabled", true)) return
+        ReminderNotifications.createChannel(context)
+        if (Build.VERSION.SDK_INT < 33 ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        ) {
+            val notification = NotificationCompat.Builder(context, ReminderNotifications.CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Техконтроль — конец смены")
+                .setContentText("Не забудьте заполнить и отправить отчёт за смену в Telegram.")
+                .setStyle(NotificationCompat.BigTextStyle().bigText("Смена заканчивается. Откройте приложение «Техконтроль», заполните ежедневный отчёт и отправьте его в общую группу Telegram."))
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .build()
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(ReminderNotifications.NOTIFICATION_ID, notification)
+        }
+        ReminderScheduler.schedule(context)
+    }
+}
+
+private object ReminderNotifications {
+    const val CHANNEL_ID = "shift_report_reminder"
+    const val NOTIFICATION_ID = 1700
+
+    fun createChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID, "Напоминания об отчёте", NotificationManager.IMPORTANCE_DEFAULT
+            ).apply { description = "Ежедневное напоминание отправить отчёт в конце смены" }
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+    }
+}
+
+private class BootCompletedReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent?) {
+        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) ReminderScheduler.schedule(context)
     }
 }
