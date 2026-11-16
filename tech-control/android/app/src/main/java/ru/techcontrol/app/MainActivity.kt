@@ -79,6 +79,7 @@ private fun TechControlApp() {
         if (granted && reminderEnabled) ReminderScheduler.schedule(context)
     }
     LaunchedEffect(Unit) {
+        prefs.edit().remove("token").remove("chat_id").apply()
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else if (reminderEnabled) ReminderScheduler.schedule(context)
