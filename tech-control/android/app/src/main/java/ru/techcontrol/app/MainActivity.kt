@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Bundle
@@ -40,6 +42,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Calendar
 import java.util.Locale
+import java.util.UUID
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
 private val objectsList = listOf("ОРВХ", "ЭЛ70", "ЭЛ19")
@@ -73,6 +77,7 @@ private fun TechControlApp() {
     var photos by remember { mutableStateOf(listOf<Uri>()) }
     var showSettings by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var pendingRequestId by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в Telegram") }
     var reminderEnabled by remember { mutableStateOf(prefs.getBoolean("reminder_enabled", true)) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -162,14 +167,16 @@ private fun TechControlApp() {
                     saveSettings()
                     busy = true
                     status = "Отправка в Telegram…"
+                    val requestId = pendingRequestId ?: UUID.randomUUID().toString().also { pendingRequestId = it }
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            try { TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendReport(employee.trim(), selectedObject, category, equipment.trim(), details.trim(), actionTaken.trim(), priority, photos) }
+                            try { TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendReport(requestId, employee.trim(), selectedObject, category, equipment.trim(), details.trim(), actionTaken.trim(), priority, photos) }
                             catch (e: Exception) { "Ошибка отправки: ${e.message ?: "неизвестная ошибка"}" }
                         }
                         status = result
                         busy = false
                         if (result.startsWith("Отправлено")) {
+                            pendingRequestId = null
                             details = ""; actionTaken = ""; equipment = ""; photos = emptyList(); priority = "Обычный"
                         }
                     }
@@ -183,12 +190,35 @@ private fun TechControlApp() {
 
 private class TelegramRelayApi(private val context: Context, private val endpoint: String, private val appKey: String) {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(180, TimeUnit.SECONDS)
-        .writeTimeout(180, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(240, TimeUnit.SECONDS)
+        .writeTimeout(240, TimeUnit.SECONDS)
+        .callTimeout(300, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
         .build()
 
-    fun sendReport(employee: String, obj: String, category: String, equipment: String, details: String, measures: String, priority: String, photos: List<Uri>): String {
+    private fun photoAsJpeg(uri: Uri, index: Int): ByteArray {
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            ?: throw IllegalStateException("Не удалось открыть фотографию №${index + 1}. Выберите JPG или PNG.")
+        val maxSide = 2048
+        val scale = minOf(1.0, maxSide.toDouble() / maxOf(bitmap.width, bitmap.height))
+        val resized = if (scale < 1.0) Bitmap.createScaledBitmap(bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1), true) else bitmap
+        if (resized !== bitmap) bitmap.recycle()
+        val output = ByteArrayOutputStream()
+        var quality = 88
+        do {
+            output.reset()
+            resized.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            quality -= 8
+        } while (output.size() > 9 * 1024 * 1024 && quality >= 56)
+        resized.recycle()
+        if (output.size() > 9 * 1024 * 1024) throw IllegalStateException("Фотография №${index + 1} слишком большая после сжатия")
+        return output.toByteArray()
+    }
+
+    fun sendReport(requestId: String, employee: String, obj: String, category: String, equipment: String, details: String, measures: String, priority: String, photos: List<Uri>): String {
         val time = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale("ru", "RU")).format(Date())
         val reportText = buildString {
             append("📋 ТЕХНИЧЕСКИЙ ОТЧЁТ\n")
@@ -199,6 +229,7 @@ private class TelegramRelayApi(private val context: Context, private val endpoin
             if (measures.isNotBlank()) append("\nДополнительно / принятые меры:\n$measures\n")
         }
         val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("request_id", requestId)
             .addFormDataPart("employee", employee)
             .addFormDataPart("object", obj)
             .addFormDataPart("category", category)
@@ -208,11 +239,8 @@ private class TelegramRelayApi(private val context: Context, private val endpoin
             .addFormDataPart("priority", priority)
             .addFormDataPart("report_text", reportText)
         photos.forEachIndexed { index, uri ->
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: throw IllegalStateException("Не удалось прочитать фотографию №${index + 1}")
-            val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
-            val filename = if (mime.contains("png")) "photo_${index + 1}.png" else "photo_${index + 1}.jpg"
-            builder.addFormDataPart("photo", filename, bytes.toRequestBody(mime.toMediaType()))
+            val bytes = photoAsJpeg(uri, index)
+            builder.addFormDataPart("photo", "photo_${index + 1}.jpg", bytes.toRequestBody("image/jpeg".toMediaType()))
         }
         val url = endpoint.trimEnd('/') + "/api/report"
         val request = Request.Builder().url(url)
