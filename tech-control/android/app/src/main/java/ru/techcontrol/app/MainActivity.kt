@@ -191,12 +191,12 @@ private class TelegramRelayApi(private val context: Context, private val endpoin
     fun sendReport(employee: String, obj: String, category: String, equipment: String, details: String, measures: String, priority: String, photos: List<Uri>): String {
         val time = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale("ru", "RU")).format(Date())
         val reportText = buildString {
-            append("📋 ТЕХНИЧЕСКИЙ ОТЧЁТ\\n")
-            append("Объект: $obj\\nКатегория: $category\\nСотрудник: $employee\\nВремя: $time\\n")
-            if (equipment.isNotBlank()) append("Оборудование / участок: $equipment\\n")
-            if (category == "Неисправность" || category == "Аварийная ситуация") append("Приоритет: $priority\\n")
-            append("\\nОписание:\\n$details\\n")
-            if (measures.isNotBlank()) append("\\nДополнительно / принятые меры:\\n$measures\\n")
+            append("📋 ТЕХНИЧЕСКИЙ ОТЧЁТ\n")
+            append("Объект: $obj\nКатегория: $category\nСотрудник: $employee\nВремя: $time\n")
+            if (equipment.isNotBlank()) append("Оборудование / участок: $equipment\n")
+            if (category == "Неисправность" || category == "Аварийная ситуация") append("Приоритет: $priority\n")
+            append("\nОписание:\n$details\n")
+            if (measures.isNotBlank()) append("\nДополнительно / принятые меры:\n$measures\n")
         }
         val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("employee", employee)
