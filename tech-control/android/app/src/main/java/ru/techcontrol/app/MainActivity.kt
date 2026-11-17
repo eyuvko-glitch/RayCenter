@@ -89,8 +89,29 @@ private fun recordAttendance(context: Context, field: String): String {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashHandler()
         ReminderNotifications.createChannel(this)
         setContent { MaterialTheme(colorScheme = AppDarkColors) { TechControlApp() } }
+    }
+
+    private fun installCrashHandler() {
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                getSharedPreferences("tech_control", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_crash", android.util.Log.getStackTraceString(throwable))
+                    .commit()
+            } catch (_: Throwable) {
+                // Не допускаем повторную аварию во время записи диагностического отчёта.
+            }
+            if (previousHandler != null) {
+                previousHandler.uncaughtException(thread, throwable)
+            } else {
+                android.os.Process.killProcess(android.os.Process.myPid())
+                System.exit(10)
+            }
+        }
     }
 }
 
@@ -117,6 +138,7 @@ private fun TechControlApp() {
     var busy by remember { mutableStateOf(false) }
     var pendingRequestId by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в Telegram") }
+    var crashReport by remember { mutableStateOf(prefs.getString("last_crash", null)) }
     var reminderEnabled by remember { mutableStateOf(prefs.getBoolean("reminder_enabled", true)) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted && reminderEnabled) ReminderScheduler.schedule(context)
@@ -373,6 +395,32 @@ private fun TechControlApp() {
             Text("Перед первым использованием откройте «Настройки», укажите ФИО, адрес сервера и ключ доступа.", style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+    if (!crashReport.isNullOrBlank()) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Предыдущий запуск завершился с ошибкой") },
+            text = {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                    Text("Диагностический текст. Нажмите «Скопировать» и отправьте его сюда — по нему можно определить причину вылета.")
+                    Spacer(Modifier.height(8.dp))
+                    Text(crashReport ?: "")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Техконтроль crash log", crashReport ?: ""))
+                    status = "Текст ошибки скопирован в буфер обмена."
+                }) { Text("Скопировать") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    prefs.edit().remove("last_crash").apply()
+                    crashReport = null
+                }) { Text("Закрыть") }
+            }
+        )
     }
 }
 
