@@ -198,14 +198,52 @@ private fun TechControlApp() {
             } else if (!showSettings) {
                 Text("Учёт рабочего времени", style = MaterialTheme.typography.titleMedium)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { arrivalTime = recordAttendance(context, "arrival"); historyRefresh++ },
-                        modifier = Modifier.weight(1f)) {
-                        Text(if (arrivalTime.isBlank()) "Отметить приход" else "Приход: " + arrivalTime)
-                    }
-                    OutlinedButton(onClick = { departureTime = recordAttendance(context, "departure"); historyRefresh++ },
-                        modifier = Modifier.weight(1f)) {
-                        Text(if (departureTime.isBlank()) "Отметить уход" else "Уход: " + departureTime)
-                    }
+                    OutlinedButton(
+                        enabled = !busy && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
+                        onClick = {
+                            busy = true
+                            status = "Отправка отметки прихода…"
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    try {
+                                        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                        TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendAttendance(
+                                            UUID.randomUUID().toString(), employee.trim(), selectedObject, "arrival", time
+                                        )
+                                        recordAttendance(context, "arrival")
+                                        "Приход в $time отправлен в Telegram."
+                                    } catch (e: Exception) { "Ошибка отправки отметки: ${e.message ?: "неизвестная ошибка"}" }
+                                }
+                                arrivalTime = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}").optString("arrival", "") } catch (_: Exception) { "" }
+                                historyRefresh++
+                                status = result
+                                busy = false
+                            }
+                        }, modifier = Modifier.weight(1f)
+                    ) { Text(if (arrivalTime.isBlank()) "Отметить приход" else "Приход: " + arrivalTime) }
+                    OutlinedButton(
+                        enabled = !busy && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
+                        onClick = {
+                            busy = true
+                            status = "Отправка отметки ухода…"
+                            scope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    try {
+                                        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                        TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendAttendance(
+                                            UUID.randomUUID().toString(), employee.trim(), selectedObject, "departure", time
+                                        )
+                                        recordAttendance(context, "departure")
+                                        "Уход в $time отправлен в Telegram."
+                                    } catch (e: Exception) { "Ошибка отправки отметки: ${e.message ?: "неизвестная ошибка"}" }
+                                }
+                                departureTime = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}").optString("departure", "") } catch (_: Exception) { "" }
+                                historyRefresh++
+                                status = result
+                                busy = false
+                            }
+                        }, modifier = Modifier.weight(1f)
+                    ) { Text(if (departureTime.isBlank()) "Отметить уход" else "Уход: " + departureTime) }
                 }
                 Text("Новый отчёт", style = MaterialTheme.typography.titleLarge)
                 Text("Объект")
@@ -279,6 +317,29 @@ private class TelegramRelayApi(private val context: Context, private val endpoin
         .callTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
+
+    fun sendAttendance(requestId: String, employee: String, obj: String, event: String, time: String) {
+        val payload = JSONObject().apply {
+            put("request_id", requestId)
+            put("employee", employee)
+            put("object", obj)
+            put("event", event)
+            put("time", time)
+        }
+        val request = Request.Builder()
+            .url(endpoint.trimEnd('/') + "/api/attendance")
+            .header("Authorization", "Bearer $appKey")
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            val json = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
+            if (!response.isSuccessful || !json.optBoolean("ok", false)) {
+                val reason = json.optString("error").ifBlank { raw.take(400) }
+                throw IllegalStateException("Сервер ${response.code}: $reason")
+            }
+        }
+    }
 
     fun sendReport(requestId: String, employee: String, obj: String, category: String, details: String, measures: String, priority: String): String {
         val time = SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale("ru", "RU")).format(Date())
