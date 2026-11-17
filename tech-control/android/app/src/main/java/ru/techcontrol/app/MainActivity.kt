@@ -529,7 +529,7 @@ private object ReminderScheduler {
     }
 }
 
-private class ShiftReminderReceiver : BroadcastReceiver() {
+class ShiftReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val prefs = context.getSharedPreferences("tech_control", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("reminder_enabled", true)) return
@@ -567,7 +567,7 @@ private object ReminderNotifications {
     }
 }
 
-private class BootCompletedReceiver : BroadcastReceiver() {
+class BootCompletedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action == Intent.ACTION_BOOT_COMPLETED) ReminderScheduler.schedule(context)
     }
