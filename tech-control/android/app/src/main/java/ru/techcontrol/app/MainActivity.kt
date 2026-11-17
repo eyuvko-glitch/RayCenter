@@ -46,6 +46,35 @@ private val categories = listOf(
     "Ежедневный отчёт", "Неисправность", "Выполненные работы",
     "Осмотр оборудования", "Заявка на материалы", "Аварийная ситуация"
 )
+private fun saveReportToHistory(context: Context, employee: String, obj: String, category: String, reportText: String) {
+    val prefs = context.getSharedPreferences("tech_control", Context.MODE_PRIVATE)
+    val items = try { JSONArray(prefs.getString("report_history", "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+    val entry = JSONObject().apply {
+        put("date", SimpleDateFormat("dd.MM.yyyy HH:mm:ss", Locale("ru", "RU")).format(Date()))
+        put("employee", employee)
+        put("object", obj)
+        put("category", category)
+        put("text", reportText)
+    }
+    val updated = JSONArray().apply {
+        put(entry)
+        for (i in 0 until minOf(items.length(), 199)) put(items.getJSONObject(i))
+    }
+    prefs.edit().putString("report_history", updated.toString()).apply()
+}
+
+private fun attendanceKey(date: String) = "attendance_" + date
+private fun currentDayKey(): String = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+private fun recordAttendance(context: Context, field: String): String {
+    val prefs = context.getSharedPreferences("tech_control", Context.MODE_PRIVATE)
+    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+    val key = attendanceKey(currentDayKey())
+    val data = try { JSONObject(prefs.getString(key, "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+    data.put(field, time)
+    prefs.edit().putString(key, data.toString()).apply()
+    return time
+}
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
