@@ -132,9 +132,13 @@ private fun TechControlApp() {
             shiftActive = prefs.getBoolean("shift_active", false)
         }
         prefs.edit().remove("token").remove("chat_id").apply()
-        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (reminderEnabled) ReminderScheduler.schedule(context)
+        // Не запрашиваем разрешение на уведомления во время холодного запуска:
+        // Android может ещё не перевести Activity в состояние, готовое к запуску permission flow.
+        // Если разрешение уже выдано, просто восстанавливаем ежедневное напоминание.
+        if (reminderEnabled && (Build.VERSION.SDK_INT < 33 ||
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)) {
+            ReminderScheduler.schedule(context)
+        }
     }
     val scope = rememberCoroutineScope()
 
@@ -160,7 +164,16 @@ private fun TechControlApp() {
                     Switch(checked = reminderEnabled, onCheckedChange = { enabled ->
                         reminderEnabled = enabled
                         prefs.edit().putBoolean("reminder_enabled", enabled).apply()
-                        if (enabled) ReminderScheduler.schedule(context) else ReminderScheduler.cancel(context)
+                        if (enabled) {
+                            if (Build.VERSION.SDK_INT >= 33 &&
+                                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                ReminderScheduler.schedule(context)
+                            }
+                        } else {
+                            ReminderScheduler.cancel(context)
+                        }
                     })
                 }
                 OutlinedTextField(value = employee, onValueChange = { employee = it }, label = { Text("ФИО сотрудника") }, modifier = Modifier.fillMaxWidth())
