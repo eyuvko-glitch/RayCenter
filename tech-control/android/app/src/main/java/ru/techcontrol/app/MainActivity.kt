@@ -98,6 +98,10 @@ private fun TechControlApp() {
     var actionTaken by remember { mutableStateOf("") }
     var priority by remember { mutableStateOf("Обычный") }
     var showSettings by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
+    var arrivalTime by remember { mutableStateOf("") }
+    var departureTime by remember { mutableStateOf("") }
+    var historyRefresh by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var pendingRequestId by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf("Заполните форму и отправьте отчёт в Telegram") }
@@ -106,6 +110,9 @@ private fun TechControlApp() {
         if (granted && reminderEnabled) ReminderScheduler.schedule(context)
     }
     LaunchedEffect(Unit) {
+        val dayData = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+        arrivalTime = dayData.optString("arrival", "")
+        departureTime = dayData.optString("departure", "")
         prefs.edit().remove("token").remove("chat_id").apply()
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -120,7 +127,8 @@ private fun TechControlApp() {
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("Технический контроль") }, actions = {
-            TextButton(onClick = { showSettings = !showSettings }) { Text("Настройки") }
+            TextButton(onClick = { showHistory = !showHistory; showSettings = false; historyRefresh++ }) { Text(if (showHistory) "Отчёт" else "История") }
+            TextButton(onClick = { showSettings = !showSettings; showHistory = false }) { Text("Настройки") }
         })
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -140,13 +148,63 @@ private fun TechControlApp() {
                 OutlinedTextField(value = employee, onValueChange = { employee = it }, label = { Text("ФИО сотрудника") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = relayUrl, onValueChange = { relayUrl = it }, label = { Text("Адрес сервера отправки") }, placeholder = { Text("https://ваш-сервер.workers.dev") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = appKey, onValueChange = { appKey = it }, label = { Text("Ключ доступа приложения") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                Button(onClick = { saveSettings(); status = "Настройки сохранены на этом телефоне" }, modifier = Modifier.fillMaxWidth()) { Text("Сохранить настройки") }
+                Button(onClick = { saveSettings(); status = "Настройки сохранены на этом телефоне"; showSettings = false }, modifier = Modifier.fillMaxWidth()) { Text("Сохранить настройки") }
                 Text("Токен Telegram и ID группы будут храниться только на сервере. В приложение вводятся адрес сервера и отдельный ключ доступа.", style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider()
             }
 
-            Text("Новый отчёт", style = MaterialTheme.typography.titleLarge)
-            Text("Объект")
+            if (showHistory) {
+                Text("История на этом телефоне", style = MaterialTheme.typography.titleLarge)
+                Text("Отправленные отчёты", style = MaterialTheme.typography.titleMedium)
+                val reportItems = remember(historyRefresh) {
+                    try { JSONArray(prefs.getString("report_history", "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+                }
+                if (reportItems.length() == 0) Text("Отправленных отчётов пока нет.")
+                for (i in 0 until reportItems.length()) {
+                    val item = reportItems.optJSONObject(i) ?: continue
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(item.optString("date"), style = MaterialTheme.typography.labelMedium)
+                            Text(item.optString("object") + " · " + item.optString("category"), style = MaterialTheme.typography.titleSmall)
+                            Text("Сотрудник: " + item.optString("employee"), style = MaterialTheme.typography.bodySmall)
+                            Text(item.optString("text"), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+                HorizontalDivider()
+                Text("Учёт рабочего времени", style = MaterialTheme.typography.titleMedium)
+                val attendanceRecords = remember(historyRefresh) {
+                    prefs.all.filter { it.key.startsWith("attendance_") }
+                        .sortedByDescending { it.key.removePrefix("attendance_") }
+                        .mapNotNull { entry ->
+                            try { entry.key.removePrefix("attendance_") to JSONObject(entry.value as? String ?: "{}") }
+                            catch (_: Exception) { null }
+                        }
+                }
+                if (attendanceRecords.isEmpty()) Text("Отметок прихода и ухода пока нет.")
+                attendanceRecords.forEach { (day, data) ->
+                    val formatted = try {
+                        SimpleDateFormat("dd.MM.yyyy", Locale("ru", "RU")).format(
+                            SimpleDateFormat("yyyyMMdd", Locale.US).parse(day)!!
+                        )
+                    } catch (_: Exception) { day }
+                    Text(formatted + " — приход: " + data.optString("arrival", "не отмечен") +
+                        "; уход: " + data.optString("departure", "не отмечен"))
+                }
+            } else if (!showSettings) {
+                Text("Учёт рабочего времени", style = MaterialTheme.typography.titleMedium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { arrivalTime = recordAttendance(context, "arrival"); historyRefresh++ },
+                        modifier = Modifier.weight(1f)) {
+                        Text(if (arrivalTime.isBlank()) "Отметить приход" else "Приход: " + arrivalTime)
+                    }
+                    OutlinedButton(onClick = { departureTime = recordAttendance(context, "departure"); historyRefresh++ },
+                        modifier = Modifier.weight(1f)) {
+                        Text(if (departureTime.isBlank()) "Отметить уход" else "Уход: " + departureTime)
+                    }
+                }
+                Text("Новый отчёт", style = MaterialTheme.typography.titleLarge)
+                Text("Объект")
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 objectsList.forEachIndexed { index, item ->
                     SegmentedButton(selected = selectedObject == item, onClick = { selectedObject = item }, shape = SegmentedButtonDefaults.itemShape(index, objectsList.size)) { Text(item) }
@@ -200,6 +258,7 @@ private fun TechControlApp() {
             ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Отправить в Telegram") }
             Text(status, style = MaterialTheme.typography.bodyMedium, color = if (status.startsWith("Ошибка")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
             Text("Перед первым использованием откройте «Настройки», укажите ФИО, адрес сервера и ключ доступа.", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
