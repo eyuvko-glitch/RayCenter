@@ -244,13 +244,17 @@ private fun TechControlApp() {
                     val requestId = pendingRequestId ?: UUID.randomUUID().toString().also { pendingRequestId = it }
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            try { TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendReport(requestId, employee.trim(), selectedObject, category, details.trim(), actionTaken.trim(), priority) }
-                            catch (e: Exception) { "Ошибка отправки: ${e.message ?: "неизвестная ошибка"}" }
+                            try {
+                                val reportText = TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendReport(requestId, employee.trim(), selectedObject, category, details.trim(), actionTaken.trim(), priority)
+                                saveReportToHistory(context, employee.trim(), selectedObject, category, reportText)
+                                "Отправлено в Telegram и сохранено в истории."
+                            } catch (e: Exception) { "Ошибка отправки: ${e.message ?: "неизвестная ошибка"}" }
                         }
                         status = result
                         busy = false
                         if (result.startsWith("Отправлено")) {
                             pendingRequestId = null
+                            historyRefresh++
                             details = ""; actionTaken = ""; priority = "Обычный"
                         }
                     }
@@ -306,7 +310,7 @@ private class TelegramRelayApi(private val context: Context, private val endpoin
                 val reason = json.optString("error").ifBlank { raw.take(400) }
                 throw IllegalStateException("Сервер ${response.code}: $reason")
             }
-            return "Отчёт отправлен в Telegram."
+            return reportText
         }
     }
 }
