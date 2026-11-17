@@ -43,7 +43,7 @@ export default {
         const object = String(incoming.object || "").trim();
         const event = String(incoming.event || "").trim();
         const time = String(incoming.time || "").trim();
-        if (!requestId || requestId.length > 80 || !employee || !object || !["arrival", "departure"].includes(event) || !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time)) {
+        if (!requestId || requestId.length > 80 || !employee || !object || !["arrival", "departure"].includes(event) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
           return json({ ok: false, error: "Некорректные данные отметки рабочего времени" }, 400);
         }
         const cache = caches.default;
@@ -62,7 +62,7 @@ export default {
           `Объект: ${object}`,
           `Дата: ${date}`,
           `Время: ${time}`
-        ].join("\\n");
+        ].join("\n");
         const telegramResponse = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
           method: "POST",
           headers: { "content-type": "application/json" },
