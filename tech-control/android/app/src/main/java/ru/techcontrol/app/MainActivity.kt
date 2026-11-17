@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -40,6 +41,15 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+
+private val AppDarkColors = darkColorScheme(
+    primary = Color(0xFF55C8FF), onPrimary = Color(0xFF002B40),
+    secondary = Color(0xFF4B9DFF), onSecondary = Color(0xFF001D36),
+    background = Color(0xFF08121F), onBackground = Color(0xFFE7F3FF),
+    surface = Color(0xFF101F30), onSurface = Color(0xFFE7F3FF),
+    surfaceVariant = Color(0xFF1B3046), onSurfaceVariant = Color(0xFFB6CBE0),
+    outline = Color(0xFF54718B), error = Color(0xFFFF7777)
+)
 
 private val objectsList = listOf("ОРВХ", "ЭЛ70", "ЭЛ19")
 private val categories = listOf(
@@ -80,7 +90,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ReminderNotifications.createChannel(this)
-        setContent { MaterialTheme { TechControlApp() } }
+        setContent { MaterialTheme(colorScheme = AppDarkColors) { TechControlApp() } }
     }
 }
 
@@ -101,6 +111,8 @@ private fun TechControlApp() {
     var showHistory by remember { mutableStateOf(false) }
     var arrivalTime by remember { mutableStateOf("") }
     var departureTime by remember { mutableStateOf("") }
+    var shiftActive by remember { mutableStateOf(prefs.getBoolean("shift_active", false)) }
+    var reportAndLeave by remember { mutableStateOf(false) }
     var historyRefresh by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var pendingRequestId by remember { mutableStateOf<String?>(null) }
@@ -113,6 +125,12 @@ private fun TechControlApp() {
         val dayData = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
         arrivalTime = dayData.optString("arrival", "")
         departureTime = dayData.optString("departure", "")
+        if (!prefs.contains("shift_active")) {
+            shiftActive = arrivalTime.isNotBlank() && departureTime.isBlank()
+            prefs.edit().putBoolean("shift_active", shiftActive).apply()
+        } else {
+            shiftActive = prefs.getBoolean("shift_active", false)
+        }
         prefs.edit().remove("token").remove("chat_id").apply()
         if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -199,7 +217,7 @@ private fun TechControlApp() {
                 Text("Учёт рабочего времени", style = MaterialTheme.typography.titleMedium)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        enabled = !busy && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
+                        enabled = !busy && !shiftActive && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
                         onClick = {
                             busy = true
                             status = "Отправка отметки прихода…"
@@ -211,18 +229,20 @@ private fun TechControlApp() {
                                             UUID.randomUUID().toString(), employee.trim(), selectedObject, "arrival", time
                                         )
                                         recordAttendance(context, "arrival")
+                                        prefs.edit().putBoolean("shift_active", true).apply()
                                         "Приход в $time отправлен в Telegram."
                                     } catch (e: Exception) { "Ошибка отправки отметки: ${e.message ?: "неизвестная ошибка"}" }
                                 }
                                 arrivalTime = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}").optString("arrival", "") } catch (_: Exception) { "" }
+                                if (result.startsWith("Приход в ")) shiftActive = true
                                 historyRefresh++
                                 status = result
                                 busy = false
                             }
                         }, modifier = Modifier.weight(1f)
-                    ) { Text(if (arrivalTime.isBlank()) "Отметить приход" else "Приход: " + arrivalTime) }
+                    ) { Text(if (shiftActive) "Приход отмечен" else "Отметить приход") }
                     OutlinedButton(
-                        enabled = !busy && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
+                        enabled = !busy && shiftActive && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank(),
                         onClick = {
                             busy = true
                             status = "Отправка отметки ухода…"
@@ -234,16 +254,22 @@ private fun TechControlApp() {
                                             UUID.randomUUID().toString(), employee.trim(), selectedObject, "departure", time
                                         )
                                         recordAttendance(context, "departure")
+                                        prefs.edit().putBoolean("shift_active", false).apply()
                                         "Уход в $time отправлен в Telegram."
                                     } catch (e: Exception) { "Ошибка отправки отметки: ${e.message ?: "неизвестная ошибка"}" }
                                 }
                                 departureTime = try { JSONObject(prefs.getString(attendanceKey(currentDayKey()), "{}") ?: "{}").optString("departure", "") } catch (_: Exception) { "" }
+                                if (result.startsWith("Уход в ")) {
+                                    shiftActive = false
+                                    arrivalTime = ""
+                                    departureTime = ""
+                                }
                                 historyRefresh++
                                 status = result
                                 busy = false
                             }
                         }, modifier = Modifier.weight(1f)
-                    ) { Text(if (departureTime.isBlank()) "Отметить уход" else "Уход: " + departureTime) }
+                    ) { Text(if (shiftActive) "Отметить уход" else "Сначала отметьте приход") }
                 }
                 Text("Новый отчёт", style = MaterialTheme.typography.titleLarge)
                 Text("Объект")
@@ -277,6 +303,12 @@ private fun TechControlApp() {
                     }
                 }
             }
+            if (category == "Ежедневный отчёт" && shiftActive) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(checked = reportAndLeave, onCheckedChange = { reportAndLeave = it })
+                    Text("После отправки отчёта отметить уход и завершить смену")
+                }
+            }
             Button(
                 enabled = !busy && employee.isNotBlank() && relayUrl.startsWith("https://") && appKey.isNotBlank() && details.isNotBlank(),
                 onClick = {
@@ -285,24 +317,46 @@ private fun TechControlApp() {
                     status = "Отправка в Telegram…"
                     val requestId = pendingRequestId ?: UUID.randomUUID().toString().also { pendingRequestId = it }
                     scope.launch {
+                        var reportWasSent = false
+                        val closeShiftAfterReport = reportAndLeave && shiftActive && category == "Ежедневный отчёт"
                         val result = withContext(Dispatchers.IO) {
                             try {
-                                val reportText = TelegramRelayApi(context, relayUrl.trim(), appKey.trim()).sendReport(requestId, employee.trim(), selectedObject, category, details.trim(), actionTaken.trim(), priority)
+                                val api = TelegramRelayApi(context, relayUrl.trim(), appKey.trim())
+                                val reportText = api.sendReport(requestId, employee.trim(), selectedObject, category, details.trim(), actionTaken.trim(), priority)
                                 saveReportToHistory(context, employee.trim(), selectedObject, category, reportText)
-                                "Отправлено в Telegram и сохранено в истории."
+                                reportWasSent = true
+                                if (closeShiftAfterReport) {
+                                    try {
+                                        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                        api.sendAttendance(UUID.randomUUID().toString(), employee.trim(), selectedObject, "departure", time)
+                                        recordAttendance(context, "departure")
+                                        prefs.edit().putBoolean("shift_active", false).apply()
+                                        "Отчёт отправлен. Уход в $time также отмечен, смена завершена."
+                                    } catch (e: Exception) {
+                                        "Отчёт отправлен и сохранён, но отметка ухода не прошла: ${e.message ?: "ошибка"}"
+                                    }
+                                } else {
+                                    "Отправлено в Telegram и сохранено в истории."
+                                }
                             } catch (e: Exception) { "Ошибка отправки: ${e.message ?: "неизвестная ошибка"}" }
                         }
                         status = result
                         busy = false
-                        if (result.startsWith("Отправлено")) {
+                        if (reportWasSent) {
                             pendingRequestId = null
                             historyRefresh++
                             details = ""; actionTaken = ""; priority = "Обычный"
+                            reportAndLeave = false
+                            if (closeShiftAfterReport && result.startsWith("Отчёт отправлен. Уход")) {
+                                shiftActive = false
+                                arrivalTime = ""
+                                departureTime = ""
+                            }
                         }
                     }
                 }, modifier = Modifier.fillMaxWidth().height(52.dp)
             ) { if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Отправить в Telegram") }
-            Text(status, style = MaterialTheme.typography.bodyMedium, color = if (status.startsWith("Ошибка")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+            Text(status, style = MaterialTheme.typography.bodyMedium, color = if (status.startsWith("Ошибка") || status.contains("но отметка ухода не прошла")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
             Text("Перед первым использованием откройте «Настройки», укажите ФИО, адрес сервера и ключ доступа.", style = MaterialTheme.typography.bodySmall)
             }
         }
