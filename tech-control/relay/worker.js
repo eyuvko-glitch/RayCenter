@@ -24,7 +24,7 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true, service: "tech-control-relay" });
     }
-    if (request.method !== "POST" || url.pathname !== "/api/report") {
+    if (request.method !== "POST" || !["/api/report", "/api/attendance"].includes(url.pathname)) {
       return json({ ok: false, error: "Not found" }, 404);
     }
     if (!authorized(request, env.APP_KEY)) {
@@ -36,6 +36,49 @@ export default {
 
     try {
       const incoming = await request.json();
+
+      if (url.pathname === "/api/attendance") {
+        const requestId = String(incoming.request_id || "").trim();
+        const employee = String(incoming.employee || "").trim();
+        const object = String(incoming.object || "").trim();
+        const event = String(incoming.event || "").trim();
+        const time = String(incoming.time || "").trim();
+        if (!requestId || requestId.length > 80 || !employee || !object || !["arrival", "departure"].includes(event) || !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time)) {
+          return json({ ok: false, error: "Некорректные данные отметки рабочего времени" }, 400);
+        }
+        const cache = caches.default;
+        const cacheKey = new Request(`${url.origin}/__attendance/${encodeURIComponent(requestId)}`, { method: "GET" });
+        const cached = await cache.match(cacheKey);
+        if (cached) return new Response(cached.body, cached);
+
+        const date = new Intl.DateTimeFormat("ru-RU", {
+          timeZone: "Asia/Almaty", day: "2-digit", month: "2-digit", year: "numeric"
+        }).format(new Date());
+        const isArrival = event === "arrival";
+        const text = [
+          isArrival ? "🟢 ПРИХОД НА РАБОТУ" : "🔴 УХОД С РАБОТЫ",
+          isArrival ? "#ПриходНаРаботу" : "#УходСРаботы",
+          `Сотрудник: ${employee}`,
+          `Объект: ${object}`,
+          `Дата: ${date}`,
+          `Время: ${time}`
+        ].join("\\n");
+        const telegramResponse = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ chat_id: env.CHAT_ID, text }),
+        });
+        const telegramResult = await telegramResponse.json().catch(() => ({}));
+        if (!telegramResponse.ok || !telegramResult.ok) {
+          return json({ ok: false, error: telegramResult.description || `Telegram API HTTP ${telegramResponse.status}` }, 502);
+        }
+        const result = { ok: true, request_id: requestId };
+        await cache.put(cacheKey, new Response(JSON.stringify(result), {
+          status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=86400" }
+        }));
+        return json(result);
+      }
+
       const requestId = String(incoming.request_id || "").trim();
       const reportText = String(incoming.report_text || "").trim();
 
