@@ -173,12 +173,16 @@ private fun TechControlApp() {
                 }
                 HorizontalDivider()
                 Text("Учёт рабочего времени", style = MaterialTheme.typography.titleMedium)
-                val attendanceRecords = remember(historyRefresh) {
-                    prefs.all.filter { it.key.startsWith("attendance_") }
-                        .sortedByDescending { it.key.removePrefix("attendance_") }
+                val attendanceRecords: List<Pair<String, JSONObject>> = remember(historyRefresh) {
+                    prefs.all.entries
+                        .filter { entry -> entry.key.startsWith("attendance_") }
+                        .sortedByDescending { entry -> entry.key.removePrefix("attendance_") }
                         .mapNotNull { entry ->
-                            try { entry.key.removePrefix("attendance_") to JSONObject(entry.value as? String ?: "{}") }
-                            catch (_: Exception) { null }
+                            try {
+                                val day = entry.key.removePrefix("attendance_")
+                                val data = JSONObject(entry.value as? String ?: "{}")
+                                Pair(day, data)
+                            } catch (_: Exception) { null }
                         }
                 }
                 if (attendanceRecords.isEmpty()) Text("Отметок прихода и ухода пока нет.")
