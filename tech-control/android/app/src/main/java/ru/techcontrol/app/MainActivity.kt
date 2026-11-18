@@ -123,11 +123,11 @@ private fun TechControlApp() {
     var employee by remember { mutableStateOf(prefs.getString("employee", "") ?: "") }
     var relayUrl by remember { mutableStateOf(prefs.getString("relay_url", "") ?: "") }
     var appKey by remember { mutableStateOf(prefs.getString("app_key", "") ?: "") }
-    var selectedObject by remember { mutableStateOf(objectsList.first()) }
-    var category by remember { mutableStateOf(categories.first()) }
-    var details by remember { mutableStateOf("") }
-    var actionTaken by remember { mutableStateOf("") }
-    var priority by remember { mutableStateOf("Обычный") }
+    var selectedObject by remember { mutableStateOf(prefs.getString("draft_object", objectsList.first())?.takeIf { it in objectsList } ?: objectsList.first()) }
+    var category by remember { mutableStateOf(prefs.getString("draft_category", categories.first())?.takeIf { it in categories } ?: categories.first()) }
+    var details by remember { mutableStateOf(prefs.getString("draft_details", "") ?: "") }
+    var actionTaken by remember { mutableStateOf(prefs.getString("draft_action_taken", "") ?: "") }
+    var priority by remember { mutableStateOf(prefs.getString("draft_priority", "Обычный") ?: "Обычный") }
     var showSettings by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var arrivalTime by remember { mutableStateOf("") }
@@ -310,7 +310,7 @@ private fun TechControlApp() {
                 Text("Объект")
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                 objectsList.forEachIndexed { index, item ->
-                    SegmentedButton(selected = selectedObject == item, onClick = { selectedObject = item }, shape = SegmentedButtonDefaults.itemShape(index, objectsList.size)) { Text(item) }
+                    SegmentedButton(selected = selectedObject == item, onClick = { selectedObject = item; prefs.edit().putString("draft_object", item).apply() }, shape = SegmentedButtonDefaults.itemShape(index, objectsList.size)) { Text(item) }
                 }
             }
             Text("Категория")
@@ -318,10 +318,10 @@ private fun TechControlApp() {
             ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                 OutlinedTextField(value = category, onValueChange = {}, readOnly = true, label = { Text("Категория отчёта") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) }, modifier = Modifier.menuAnchor().fillMaxWidth())
                 ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    categories.forEach { item -> DropdownMenuItem(text = { Text(item) }, onClick = { category = item; expanded = false }) }
+                    categories.forEach { item -> DropdownMenuItem(text = { Text(item) }, onClick = { category = item; prefs.edit().putString("draft_category", item).apply(); expanded = false }) }
                 }
             }
-            OutlinedTextField(value = details, onValueChange = { details = it }, label = { Text(when (category) {
+            OutlinedTextField(value = details, onValueChange = { details = it; prefs.edit().putString("draft_details", it).apply() }, label = { Text(when (category) {
                 "Ежедневный отчёт" -> "Что сделано за смену"
                 "Неисправность" -> "Описание неисправности"
                 "Выполненные работы" -> "Какие работы выполнены"
@@ -329,12 +329,12 @@ private fun TechControlApp() {
                 "Заявка на материалы" -> "Что требуется и в каком количестве"
                 else -> "Описание аварийной ситуации"
             }) }, minLines = 3, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = actionTaken, onValueChange = { actionTaken = it }, label = { Text("Дополнительная информация / принятые меры (необязательно)") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = actionTaken, onValueChange = { actionTaken = it; prefs.edit().putString("draft_action_taken", it).apply() }, label = { Text("Дополнительная информация / принятые меры (необязательно)") }, minLines = 2, modifier = Modifier.fillMaxWidth())
             if (category == "Неисправность" || category == "Аварийная ситуация") {
                 Text("Приоритет")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Низкий", "Обычный", "Высокий", "Критический").forEach { p ->
-                        FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text(p) })
+                        FilterChip(selected = priority == p, onClick = { priority = p; prefs.edit().putString("draft_priority", p).apply() }, label = { Text(p) })
                     }
                 }
             }
@@ -381,6 +381,7 @@ private fun TechControlApp() {
                             pendingRequestId = null
                             historyRefresh++
                             details = ""; actionTaken = ""; priority = "Обычный"
+                            prefs.edit().remove("draft_details").remove("draft_action_taken").remove("draft_priority").apply()
                             reportAndLeave = false
                             if (closeShiftAfterReport && result.startsWith("Отчёт отправлен. Уход")) {
                                 shiftActive = false
