@@ -5,6 +5,33 @@ function json(data, status = 200) {
   });
 }
 
+async function sendTelegramMessage(env, text) {
+  const cache = caches.default;
+  const migrationKey = new Request("https://tech-control-relay.internal/__telegram_migrated_chat");
+  const cachedMigration = await cache.match(migrationKey);
+  let chatId = cachedMigration ? await cachedMigration.text() : env.CHAT_ID;
+
+  const send = async (targetChatId) => {
+    const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: targetChatId, text }),
+    });
+    const result = await response.json().catch(() => ({}));
+    return { response, result };
+  };
+
+  let outcome = await send(chatId);
+  if ((!outcome.response.ok || !outcome.result.ok) && outcome.result.parameters?.migrate_to_chat_id) {
+    chatId = String(outcome.result.parameters.migrate_to_chat_id);
+    await cache.put(migrationKey, new Response(chatId, {
+      headers: { "cache-control": "public, max-age=2592000" }
+    }));
+    outcome = await send(chatId);
+  }
+  return outcome;
+}
+
 function authorized(request, expected) {
   const supplied = request.headers.get("authorization") || "";
   const prefix = "Bearer ";
@@ -63,12 +90,7 @@ export default {
           `Дата: ${date}`,
           `Время: ${time}`
         ].join("\n");
-        const telegramResponse = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ chat_id: env.CHAT_ID, text }),
-        });
-        const telegramResult = await telegramResponse.json().catch(() => ({}));
+        const { response: telegramResponse, result: telegramResult } = await sendTelegramMessage(env, text);
         if (!telegramResponse.ok || !telegramResult.ok) {
           return json({ ok: false, error: telegramResult.description || `Telegram API HTTP ${telegramResponse.status}` }, 502);
         }
@@ -97,12 +119,7 @@ export default {
       const cached = await cache.match(cacheKey);
       if (cached) return new Response(cached.body, cached);
 
-      const telegramResponse = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: env.CHAT_ID, text: reportText }),
-      });
-      const telegramResult = await telegramResponse.json().catch(() => ({}));
+      const { response: telegramResponse, result: telegramResult } = await sendTelegramMessage(env, reportText);
       if (!telegramResponse.ok || !telegramResult.ok) {
         return json({
           ok: false,
